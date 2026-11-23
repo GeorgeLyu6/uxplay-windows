@@ -1,6 +1,8 @@
 Options:
 -n name   Specify network name of the AirPlay server (UTF-8/ascii)
 -nh       Do not add "@hostname" at the end of AirPlay server name
+-win WxH  (uxplay-windows) Lock the video window's client area at WxH,
+          e.g. -win 1920x1080 (not resizable; handy for OBS window capture)
 -h265     Support h265 (4K) video (with h265 versions of h264 plugins)
 -hls [v]  Support HTTP Live Streaming (currently Youtube video only)
           v = 2 or 3 (default 3) optionally selects video player version

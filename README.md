@@ -58,6 +58,14 @@ Environment variables are expanded when the app starts. For example:
 -n %COMPUTERNAME% -nh
 ```
 
+`-win WxH` (handled by uxplay-windows itself, not passed to UxPlay) locks the
+video window's client area at exactly WxH and removes its sizing border, so the
+window stays the same size on every connection — handy for OBS window capture:
+
+```text
+-n uxplay-windows -nh -win 1920x1080
+```
+
 </details>
 
 <details>

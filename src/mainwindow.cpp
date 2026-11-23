@@ -29,6 +29,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QTextStream>
+#include <QRegularExpression>
 
 struct RenameData {
     DWORD pid;
@@ -53,6 +54,86 @@ BOOL CALLBACK EnumWindowsProcRename(HWND hwnd, LPARAM lParam) {
             }
         }
     }
+    return TRUE;
+}
+
+// ---- fixed renderer window size ("-win WxH", handled by uxplay-windows, not passed to UxPlay) ----
+static const wchar_t kVideoWindowTitle[] = L"AirPlay Video Stream";
+
+struct FixSizeData {
+    DWORD pid;
+    int width;
+    int height;
+};
+
+// The GStreamer Direct3D renderer window: a visible top-level window of this
+// process that is not a Qt window, titled "Direct3D1x renderer" by GStreamer
+// (or already renamed to "AirPlay Video Stream ...").
+static bool isRendererWindow(HWND hwnd, DWORD pid) {
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(hwnd, &windowPid);
+    if (windowPid != pid || !IsWindowVisible(hwnd) || GetParent(hwnd) != nullptr) {
+        return false;
+    }
+    wchar_t cls[256] = {};
+    GetClassNameW(hwnd, cls, 256);
+    if (wcsncmp(cls, L"Qt", 2) == 0) {
+        return false;
+    }
+    wchar_t buf[512] = {};
+    GetWindowTextW(hwnd, buf, 512);
+    const QString title = QString::fromWCharArray(buf);
+    return (title.contains("Direct") && title.contains("enderer"))
+        || title.startsWith(QString::fromWCharArray(kVideoWindowTitle));
+}
+
+// Keep the renderer window's client area at exactly width x height:
+// remove the sizing border and maximize box, restore it if maximized, and
+// resize it back whenever it differs. Fullscreen (no caption) is left alone.
+static BOOL CALLBACK EnumWindowsProcFixSize(HWND hwnd, LPARAM lParam) {
+    auto *data = reinterpret_cast<FixSizeData*>(lParam);
+    if (!isRendererWindow(hwnd, data->pid)) {
+        return TRUE;
+    }
+    const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if (!(style & WS_CAPTION) || IsIconic(hwnd)) {
+        return TRUE;
+    }
+    if (IsZoomed(hwnd)) {
+        ShowWindowAsync(hwnd, SW_RESTORE);
+        return TRUE;
+    }
+
+    wchar_t buf[512] = {};
+    GetWindowTextW(hwnd, buf, 512);
+    if (wcsncmp(buf, kVideoWindowTitle, wcslen(kVideoWindowTitle)) != 0) {
+        SetWindowTextW(hwnd, kVideoWindowTitle);
+    }
+
+    const LONG_PTR fixedStyle = style & ~LONG_PTR(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    if (fixedStyle != style) {
+        SetWindowLongPtrW(hwnd, GWL_STYLE, fixedStyle);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+                     | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+        return TRUE;  // resize on the next tick, after the frame has changed
+    }
+
+    RECT client = {};
+    RECT window = {};
+    if (!GetClientRect(hwnd, &client) || !GetWindowRect(hwnd, &window)) {
+        return TRUE;
+    }
+    const int cw = client.right - client.left;
+    const int ch = client.bottom - client.top;
+    if (cw == data->width && ch == data->height) {
+        return TRUE;
+    }
+    const int ww = (window.right - window.left) + (data->width - cw);
+    const int wh = (window.bottom - window.top) + (data->height - ch);
+    qInfo("Renderer window client area %dx%d -> %dx%d", cw, ch, data->width, data->height);
+    SetWindowPos(hwnd, nullptr, 0, 0, ww, wh,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     return TRUE;
 }
 
@@ -373,6 +454,27 @@ void MainWindow::startServer() {
     
     QStringList args = getArgumentsFromFile();
     
+    // "-win WxH": lock the video window's client area (handled here, not by UxPlay)
+    m_fixedWindowSize = QSize();
+    for (int i = args.indexOf("-win"); i != -1; i = args.indexOf("-win")) {
+        args.removeAt(i);
+        if (i < args.size() && !args[i].startsWith("-")) {
+            const QString value = args.takeAt(i);
+            const QRegularExpressionMatch m =
+                QRegularExpression("^(\\d{2,4})x(\\d{2,4})$").match(value.trimmed());
+            if (m.hasMatch()) {
+                m_fixedWindowSize = QSize(m.captured(1).toInt(), m.captured(2).toInt());
+                qInfo("[arguments] -win: video window client area fixed at %dx%d",
+                      m_fixedWindowSize.width(), m_fixedWindowSize.height());
+            } else {
+                qWarning().noquote() << "[arguments] ignoring invalid -win value:" << value
+                                     << "(expected WxH, e.g. -win 1920x1080)";
+            }
+        } else {
+            qWarning("[arguments] -win needs a value, e.g. -win 1920x1080");
+        }
+    }
+
     int bleIdx = args.indexOf("-ble");
     if (bleIdx != -1) {
         args.removeAt(bleIdx);
@@ -427,6 +529,21 @@ void MainWindow::onAirplayStarted() {
     updateStatus();
 
     qInfo("AirPlay server started.");
+
+    if (m_fixedWindowSize.isValid()) {
+        QTimer *sizeTimer = new QTimer(this);
+        const QSize target = m_fixedWindowSize;
+        connect(sizeTimer, &QTimer::timeout, this, [this, sizeTimer, target]() {
+            if (!m_running) {
+                sizeTimer->stop();
+                sizeTimer->deleteLater();
+                return;
+            }
+            FixSizeData data{GetCurrentProcessId(), target.width(), target.height()};
+            EnumWindows(EnumWindowsProcFixSize, reinterpret_cast<LPARAM>(&data));
+        });
+        sizeTimer->start(500);
+    }
 
     // Only explicitly selected Direct3D sinks are known to support Alt+Enter.
     // Leave automatically selected GStreamer sink windows unchanged.

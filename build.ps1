@@ -424,6 +424,11 @@ function Stage-Runtime {
             "--release",
             "--no-translations",
             "--no-compiler-runtime",
+            # The Windows SDK copy on the build machine imports newer MSVC
+            # runtime exports (e.g. __std_parallel_algorithms_hw_threads) and
+            # fails to load on PCs with an older msvcp140.dll. Windows 10/11
+            # ship their own d3dcompiler_47.dll in System32.
+            "--no-system-d3d-compiler",
             "--dir", $stageDir,
             (Join-Path $stageDir "uxplay-windows.exe")
         )

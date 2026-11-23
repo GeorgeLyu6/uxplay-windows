@@ -11,6 +11,7 @@
 #include <QCheckBox>
 #include <QMessageBox>
 #include <QPointer>
+#include <QSize>
 
 class QMenu;
 class QAction;
@@ -89,5 +90,6 @@ private:
     QPointer<LogViewer> m_logViewer;
 
     bool m_running = false;
+    QSize m_fixedWindowSize;  // from "-win WxH"; invalid = not fixed
     bool m_quitting = false;
 };
